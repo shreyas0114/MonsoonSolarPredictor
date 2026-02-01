@@ -8,7 +8,7 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 import plotly.express as px
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 import tensorflow as tf
 from tensorflow import keras
 from tensorflow.keras.models import Sequential
@@ -633,7 +633,6 @@ def main():
             manual_refresh = st.button("🔄 Refresh Now", use_container_width=True, type="primary")
         with col_refresh2:
             # Show time in IST (India Standard Time)
-            from datetime import timezone, timedelta
             ist = timezone(timedelta(hours=5, minutes=30))
             last_update_time_ist = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
             st.info(f"📅 Last Update: {last_update_time_ist}")
