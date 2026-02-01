@@ -632,8 +632,11 @@ def main():
         with col_refresh1:
             manual_refresh = st.button("🔄 Refresh Now", use_container_width=True, type="primary")
         with col_refresh2:
-            last_update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            st.info(f"📅 Last Update: {last_update_time}")
+            # Show time in IST (India Standard Time)
+            from datetime import timezone, timedelta
+            ist = timezone(timedelta(hours=5, minutes=30))
+            last_update_time_ist = datetime.now(ist).strftime("%Y-%m-%d %H:%M:%S IST")
+            st.info(f"📅 Last Update: {last_update_time_ist}")
         
         # Auto-refresh mechanism
         if auto_refresh:
@@ -787,7 +790,7 @@ def main():
                     color: white; padding: 2rem; border-radius: 1rem; margin-bottom: 2rem;'>
             <h2 style='margin: 0; color: white;'>🇮🇳 INDIA SOLAR GRID - REAL-TIME STATUS</h2>
             <div style='font-size: 0.9rem; margin: 0.5rem 0; opacity: 0.9;'>
-                {live_cities} cities LIVE | {demo_cities} cities DEMO | Last updated: {last_update_time}
+                {live_cities} cities LIVE | {demo_cities} cities DEMO | Last updated: {last_update_time_ist}
             </div>
             <div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-top: 1rem;'>
                 <div style='background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 0.5rem;'>
