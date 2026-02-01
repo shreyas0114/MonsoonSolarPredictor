@@ -173,12 +173,21 @@ CITIES = {
 def load_model_and_scaler():
     """Load trained model and scaler"""
     try:
-        model = keras.models.load_model('../models/monsoon_solar_lstm.keras')
-        with open('../models/scaler.pkl', 'rb') as f:
+        # Get the directory of the current script
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)  # Go up one level to project root
+        
+        model_path = os.path.join(project_root, 'models', 'monsoon_solar_lstm.keras')
+        scaler_path = os.path.join(project_root, 'models', 'scaler.pkl')
+        
+        model = keras.models.load_model(model_path)
+        with open(scaler_path, 'rb') as f:
             scaler = pickle.load(f)
         return model, scaler
     except Exception as e:
         st.error(f"Error loading model: {e}")
+        st.info("💡 Please ensure model files are present in the 'models' folder")
         return None, None
 
 
@@ -186,11 +195,19 @@ def load_model_and_scaler():
 def load_historical_data():
     """Load historical solar data"""
     try:
-        df = pd.read_csv('../data/monsoon_solar_data.csv')
+        # Get the directory of the current script
+        import os
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        project_root = os.path.dirname(script_dir)
+        
+        data_path = os.path.join(project_root, 'data', 'monsoon_solar_data.csv')
+        
+        df = pd.read_csv(data_path)
         df['timestamp'] = pd.to_datetime(df['timestamp'])
         return df
     except Exception as e:
         st.error(f"Error loading data: {e}")
+        st.info("💡 Please ensure 'monsoon_solar_data.csv' is in the 'data' folder")
         return None
 
 
@@ -596,25 +613,128 @@ def main():
     if app_mode == "🌍 Multi-City Monitor":
         
         st.subheader("🌍 Multi-City Real-Time Solar Monitoring")
-        st.info("Monitor solar generation across all major Indian cities simultaneously")
+        
+        # API Key input at the top
+        with st.expander("⚙️ Live Weather Configuration", expanded=False):
+            api_key_input = st.text_input(
+                "OpenWeatherMap API Key (optional - leave blank for demo mode)",
+                type="password",
+                help="Enter your API key for real-time weather data across all cities"
+            )
+            
+            auto_refresh = st.checkbox("Enable Auto-Refresh (every 5 minutes)", value=False)
+            
+            if auto_refresh:
+                st.info("🔄 Dashboard will auto-refresh every 5 minutes with latest weather data")
+        
+        # Manual refresh button
+        col_refresh1, col_refresh2 = st.columns([1, 4])
+        with col_refresh1:
+            manual_refresh = st.button("🔄 Refresh Now", use_container_width=True, type="primary")
+        with col_refresh2:
+            last_update_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            st.info(f"📅 Last Update: {last_update_time}")
+        
+        # Auto-refresh mechanism
+        if auto_refresh:
+            st.empty()  # Placeholder for auto-refresh
+            import time
+            time.sleep(300)  # 5 minutes = 300 seconds
+            st.rerun()
+        
+        # Fetch live weather for all cities if API key provided
+        use_live_api = bool(api_key_input)
+        
+        if use_live_api:
+            st.success("🟢 LIVE MODE: Fetching real-time weather data from OpenWeatherMap API")
+        else:
+            st.warning("🟡 DEMO MODE: Using simulated weather data (Enter API key for live data)")
+        
+        st.markdown("---")
         
         # Get predictions for all cities
         cities_data = []
         
-        for city_name, city_details in CITIES.items():
-            # Simulate current data for each city
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        for idx, (city_name, city_details) in enumerate(CITIES.items()):
+            status_text.text(f"Fetching data for {city_name}...")
+            progress_bar.progress((idx + 1) / len(CITIES))
+            
             capacity_ratio = city_details['capacity_mw'] / 100
             
-            # Use different time indices for variety
-            city_time_idx = time_idx + hash(city_name) % 100
-            if city_time_idx >= len(df) - 20:
-                city_time_idx = time_idx
-            
-            current_window, actual_future = simulate_live_data(df, city_time_idx)
-            current_output = current_window['solar_output_mw'].iloc[-1] * capacity_ratio
-            
-            input_seq = create_input_sequence(current_window)
-            predicted_output = make_prediction(model, scaler, input_seq) * capacity_ratio
+            if use_live_api:
+                # Fetch LIVE weather data
+                lat, lon = city_details['coords']
+                weather_data, error = fetch_live_weather(lat, lon, api_key_input)
+                
+                if weather_data and not error:
+                    # Create synthetic sequence using live weather
+                    current_hour = datetime.now().hour
+                    df_hour = df[df['hour'] == current_hour].head(12)
+                    
+                    if len(df_hour) >= 12:
+                        synthetic_window = df_hour.copy()
+                        
+                        # Update with live weather
+                        synthetic_window['cloud_cover_percent'] = weather_data['cloud_cover_percent']
+                        synthetic_window['temperature_celsius'] = weather_data['temperature_celsius']
+                        synthetic_window['humidity_percent'] = weather_data['humidity_percent']
+                        synthetic_window['wind_speed_kmh'] = weather_data['wind_speed_kmh']
+                        
+                        # Estimate current output based on live conditions
+                        cloud_factor = 1 - (weather_data['cloud_cover_percent'] / 100) * 0.85
+                        time_factor = max(0, 1 - abs(current_hour - 12) / 6)
+                        current_output = city_details['capacity_mw'] * cloud_factor * time_factor * 0.7
+                        
+                        synthetic_window.iloc[-1, synthetic_window.columns.get_loc('solar_output_mw')] = current_output / capacity_ratio
+                        
+                        input_seq = create_input_sequence(synthetic_window)
+                        predicted_output = make_prediction(model, scaler, input_seq) * capacity_ratio
+                        
+                        clouds = weather_data['cloud_cover_percent']
+                        temp = weather_data['temperature_celsius']
+                        data_source = "LIVE"
+                    else:
+                        # Fallback to demo mode for this city
+                        city_time_idx = time_idx + hash(city_name) % 100
+                        if city_time_idx >= len(df) - 20:
+                            city_time_idx = time_idx
+                        
+                        current_window, _ = simulate_live_data(df, city_time_idx)
+                        current_output = current_window['solar_output_mw'].iloc[-1] * capacity_ratio
+                        input_seq = create_input_sequence(current_window)
+                        predicted_output = make_prediction(model, scaler, input_seq) * capacity_ratio
+                        clouds = current_window['cloud_cover_percent'].iloc[-1]
+                        temp = current_window['temperature_celsius'].iloc[-1]
+                        data_source = "DEMO"
+                else:
+                    # API error - use demo mode
+                    city_time_idx = time_idx + hash(city_name) % 100
+                    if city_time_idx >= len(df) - 20:
+                        city_time_idx = time_idx
+                    
+                    current_window, _ = simulate_live_data(df, city_time_idx)
+                    current_output = current_window['solar_output_mw'].iloc[-1] * capacity_ratio
+                    input_seq = create_input_sequence(current_window)
+                    predicted_output = make_prediction(model, scaler, input_seq) * capacity_ratio
+                    clouds = current_window['cloud_cover_percent'].iloc[-1]
+                    temp = current_window['temperature_celsius'].iloc[-1]
+                    data_source = "DEMO"
+            else:
+                # Demo mode - use historical data
+                city_time_idx = time_idx + hash(city_name) % 100
+                if city_time_idx >= len(df) - 20:
+                    city_time_idx = time_idx
+                
+                current_window, _ = simulate_live_data(df, city_time_idx)
+                current_output = current_window['solar_output_mw'].iloc[-1] * capacity_ratio
+                input_seq = create_input_sequence(current_window)
+                predicted_output = make_prediction(model, scaler, input_seq) * capacity_ratio
+                clouds = current_window['cloud_cover_percent'].iloc[-1]
+                temp = current_window['temperature_celsius'].iloc[-1]
+                data_source = "DEMO"
             
             change = predicted_output - current_output
             alert_level, _ = get_alert_level(current_output, predicted_output)
@@ -628,15 +748,24 @@ def main():
                 'change': change,
                 'change_pct': (change / max(current_output, 1)) * 100,
                 'alert': alert_level,
-                'clouds': current_window['cloud_cover_percent'].iloc[-1],
-                'temp': current_window['temperature_celsius'].iloc[-1]
+                'clouds': clouds,
+                'temp': temp,
+                'source': data_source
             })
+        
+        # Clear progress indicators
+        progress_bar.empty()
+        status_text.empty()
         
         # Grid Status Summary
         total_current = sum([c['current'] for c in cities_data])
         total_capacity = sum([c['capacity'] for c in cities_data])
         total_predicted = sum([c['predicted'] for c in cities_data])
         grid_utilization = (total_current / total_capacity) * 100
+        
+        # Count live vs demo cities
+        live_cities = len([c for c in cities_data if c['source'] == 'LIVE'])
+        demo_cities = len([c for c in cities_data if c['source'] == 'DEMO'])
         
         # Overall status
         critical_cities = len([c for c in cities_data if c['alert'] == 'danger'])
@@ -657,6 +786,9 @@ def main():
         <div style='background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
                     color: white; padding: 2rem; border-radius: 1rem; margin-bottom: 2rem;'>
             <h2 style='margin: 0; color: white;'>🇮🇳 INDIA SOLAR GRID - REAL-TIME STATUS</h2>
+            <div style='font-size: 0.9rem; margin: 0.5rem 0; opacity: 0.9;'>
+                {live_cities} cities LIVE | {demo_cities} cities DEMO | Last updated: {last_update_time}
+            </div>
             <div style='display: grid; grid-template-columns: repeat(4, 1fr); gap: 1rem; margin-top: 1rem;'>
                 <div style='background: rgba(255,255,255,0.2); padding: 1rem; border-radius: 0.5rem;'>
                     <div style='font-size: 0.9rem; opacity: 0.9;'>Total Generation</div>
@@ -698,12 +830,21 @@ def main():
                         card_color = "#e6ffe6"
                         border_color = "#44ff44"
                     
+                    # Data source badge
+                    if data['source'] == 'LIVE':
+                        source_badge = '<span style="background: #44ff44; color: white; padding: 0.2rem 0.5rem; border-radius: 0.3rem; font-size: 0.7rem; font-weight: bold;">🔴 LIVE</span>'
+                    else:
+                        source_badge = '<span style="background: #ffaa00; color: white; padding: 0.2rem 0.5rem; border-radius: 0.3rem; font-size: 0.7rem; font-weight: bold;">DEMO</span>'
+                    
                     with col:
                         st.markdown(f"""
                         <div style='background-color: {card_color}; 
                                     border-left: 5px solid {border_color};
                                     padding: 1rem; border-radius: 0.5rem; height: 100%;'>
-                            <h4 style='margin: 0 0 0.5rem 0;'>{data['city']}</h4>
+                            <div style='display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.5rem;'>
+                                <h4 style='margin: 0;'>{data['city']}</h4>
+                                {source_badge}
+                            </div>
                             <p style='margin: 0; font-size: 0.85rem; color: #666;'>{data['state']}</p>
                             <hr style='margin: 0.5rem 0;'>
                             <div style='font-size: 1.8rem; font-weight: bold; margin: 0.5rem 0;'>
@@ -740,7 +881,8 @@ def main():
             if critical:
                 st.error(f"🚨 **CRITICAL ALERTS ({len(critical)})**")
                 for c in critical:
-                    st.markdown(f"- **{c['city']}**: Expected drop of {abs(c['change']):.0f} MW ({abs(c['change_pct']):.0f}%)")
+                    live_badge = "🔴 LIVE" if c['source'] == 'LIVE' else "DEMO"
+                    st.markdown(f"- **{c['city']}** ({live_badge}): Expected drop of {abs(c['change']):.0f} MW ({abs(c['change_pct']):.0f}%)")
             else:
                 st.success("✅ No critical alerts")
         
@@ -748,7 +890,8 @@ def main():
             if warnings:
                 st.warning(f"⚠️ **WARNINGS ({len(warnings)})**")
                 for c in warnings:
-                    st.markdown(f"- **{c['city']}**: Expected drop of {abs(c['change']):.0f} MW ({abs(c['change_pct']):.0f}%)")
+                    live_badge = "🔴 LIVE" if c['source'] == 'LIVE' else "DEMO"
+                    st.markdown(f"- **{c['city']}** ({live_badge}): Expected drop of {abs(c['change']):.0f} MW ({abs(c['change_pct']):.0f}%)")
             else:
                 st.info("ℹ️ No warnings")
         
@@ -758,12 +901,16 @@ def main():
         
         fig = go.Figure()
         
+        # Color code by data source
+        colors_current = ['#44ff44' if c['source'] == 'LIVE' else '#ffaa00' for c in cities_data]
+        colors_predicted = ['#ff6666' if c['source'] == 'LIVE' else '#ffaa00' for c in cities_data]
+        
         fig.add_trace(go.Bar(
             name='Current Output',
             x=[c['city'] for c in cities_data],
             y=[c['current'] for c in cities_data],
-            marker_color='lightblue',
-            text=[f"{c['current']:.0f} MW" for c in cities_data],
+            marker_color=colors_current,
+            text=[f"{c['current']:.0f} MW<br>{'🔴LIVE' if c['source']=='LIVE' else 'DEMO'}" for c in cities_data],
             textposition='outside'
         ))
         
@@ -771,13 +918,13 @@ def main():
             name='30-min Prediction',
             x=[c['city'] for c in cities_data],
             y=[c['predicted'] for c in cities_data],
-            marker_color='coral',
+            marker_color=colors_predicted,
             text=[f"{c['predicted']:.0f} MW" for c in cities_data],
             textposition='outside'
         ))
         
         fig.update_layout(
-            title="Current Output vs 30-Minute Prediction",
+            title="Current Output vs 30-Minute Prediction (Green bars = LIVE API data)",
             xaxis_title="City",
             yaxis_title="Output (MW)",
             barmode='group',
